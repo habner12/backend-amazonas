@@ -134,7 +134,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
 });
 
-// Manejo de errores globales para evitar que la app se apague de golpe
+// Manejo de errores globales para evitar cierres inesperados
 process.on('uncaughtException', (err) => {
     console.error('⚠️ Error no capturado:', err.message);
 });
@@ -143,7 +143,7 @@ process.on('unhandledRejection', (err) => {
     console.error('⚠️ Promesa rechazada no capturada:', err);
 });
 
-// Iniciar servidor en el puerto asignado por Render
+// Iniciar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);

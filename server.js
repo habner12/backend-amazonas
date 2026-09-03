@@ -144,11 +144,11 @@ app.get('/api/admin/pedidos', (req, res) => {
     const sql = `
         SELECT 
             p.id, 
-            p.cliente_nombre, 
-            p.cliente_telefono, 
-            p.direccion, 
-            p.metodo_pago, 
-            p.total, 
+            COALESCE(p.cliente_nombre, 'Sin Nombre') AS cliente_nombre, 
+            COALESCE(p.cliente_telefono, 'S/N') AS cliente_telefono, 
+            COALESCE(p.direccion, 'Sin Dirección') AS direccion, 
+            COALESCE(p.metodo_pago, 'Efectivo') AS metodo_pago, 
+            COALESCE(p.total, 0) AS total, 
             COALESCE(p.estado, 'Recibido ⏳') AS estado,
             p.repartidor_id,
             COALESCE(r.nombre, 'Sin asignar') AS repartidor_nombre
@@ -158,10 +158,11 @@ app.get('/api/admin/pedidos', (req, res) => {
     `;
     pool.query(sql, (err, results) => {
         if (err) {
-            console.error('Error consultando pedidos:', err);
-            return res.status(500).json({ error: 'Error al obtener pedidos' });
+            console.error('❌ Error consultando pedidos:', err);
+            return res.status(500).json({ error: 'Error al consultar la lista de pedidos' });
         }
-        res.json(results);
+        res.setHeader('Content-Type', 'application/json');
+        res.status(200).json(results);
     });
 });
 

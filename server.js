@@ -4,11 +4,9 @@ const mysql = require('mysql2');
 
 const app = express();
 
-// Habilitar CORS para recibir peticiones desde GitHub Pages
 app.use(cors());
 app.use(express.json());
 
-// Configuración del pool de conexión a MySQL con Variables de Entorno
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT || 3306,
@@ -18,19 +16,33 @@ const pool = mysql.createPool({
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    ssl: {
-        rejectUnauthorized: false
-    }
+    ssl: { rejectUnauthorized: false }
 });
 
-// Probar conexión y crear la tabla "pedidos" automáticamente si no existe
+// Inicialización de tablas MySQL
 pool.getConnection((err, connection) => {
     if (err) {
         console.error('❌ Error de conexión a MySQL:', err.message);
     } else {
         console.log('✅ Conexión exitosa a la base de datos MySQL');
 
-        const createTableQuery = `
+        // 1. Tabla de Repartidores
+        const createRepartidoresTable = `
+            CREATE TABLE IF NOT EXISTS repartidores (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                nombre VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                vehiculo VARCHAR(100),
+                placa VARCHAR(50),
+                telefono VARCHAR(50),
+                estado VARCHAR(50) DEFAULT 'Activo 🟢',
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        `;
+
+        // 2. Tabla de Pedidos con relación a Repartidor
+        const createPedidosTable = `
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 cliente_nombre VARCHAR(255) NOT NULL,
@@ -43,27 +55,33 @@ pool.getConnection((err, connection) => {
                 propina DECIMAL(10, 2) DEFAULT 0,
                 total DECIMAL(10, 2) NOT NULL,
                 estado VARCHAR(50) DEFAULT 'Recibido ⏳',
-                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                repartidor_id INT NULL,
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (repartidor_id) REFERENCES repartidores(id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `;
 
-        connection.query(createTableQuery, (queryErr) => {
-            connection.release();
-            if (queryErr) {
-                console.error('❌ Error al crear/verificar la tabla pedidos:', queryErr.message);
-            } else {
-                console.log('✅ Tabla "pedidos" lista y verificada');
-            }
+        connection.query(createRepartidoresTable, (err) => {
+            if (err) console.error('Error creando tabla repartidores:', err.message);
+            connection.query(createPedidosTable, (err) => {
+                connection.release();
+                if (err) console.error('Error creando tabla pedidos:', err.message);
+                else console.log('✅ Tablas "repartidores" y "pedidos" listas');
+            });
         });
     }
 });
 
-// Ruta raíz (Página de inicio del API)
+// Ruta raíz
 app.get('/', (req, res) => {
     res.json({ message: 'API de AMAZONAS funcionando correctamente 🚀' });
 });
 
-// Endpoint: Crear pedido (Cliente)
+// ==========================================
+// RUTAS CLIENTE
+// ==========================================
+
+// Crear pedido
 app.post('/api/pedidos', (req, res) => {
     const { cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, propina, total } = req.body;
 
@@ -79,66 +97,116 @@ app.post('/api/pedidos', (req, res) => {
     pool.query(sql, [cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, propina || 0, total], (err, results) => {
         if (err) {
             console.error('Error insertando el pedido:', err);
-            return res.status(500).json({ error: 'Error al registrar el pedido en la base de datos' });
+            return res.status(500).json({ error: 'Error al registrar el pedido' });
         }
         res.status(201).json({ success: true, pedido_id: results.insertId });
     });
 });
 
-// Endpoint: Listar todos los pedidos (Panel Admin)
-app.get('/api/admin/pedidos', (req, res) => {
-    pool.query('SELECT * FROM pedidos ORDER BY id DESC', (err, results) => {
-        if (err) {
-            console.error('Error al obtener pedidos:', err);
-            return res.status(500).json({ error: 'Error al consultar pedidos' });
-        }
-        res.json(results);
-    });
-});
-
-// Endpoint: Obtener un pedido específico por ID (Rastrear pedido)
+// Consultar estado de pedido por ID
 app.get('/api/pedidos/:id', (req, res) => {
     const { id } = req.params;
-    pool.query('SELECT * FROM pedidos WHERE id = ?', [id], (err, results) => {
-        if (err) {
-            console.error('Error al buscar el pedido:', err);
-            return res.status(500).json({ error: 'Error al consultar el pedido' });
-        }
-        if (results.length === 0) {
-            return res.status(404).json({ error: 'Pedido no encontrado' });
-        }
+    pool.query('SELECT p.*, r.nombre as repartidor_nombre, r.telefono as repartidor_telefono FROM pedidos p LEFT JOIN repartidores r ON p.repartidor_id = r.id WHERE p.id = ?', [id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Error al consultar pedido' });
+        if (results.length === 0) return res.status(404).json({ error: 'Pedido no encontrado' });
         res.json(results[0]);
     });
 });
 
-// Endpoint: Actualizar el estado de un pedido (Panel Admin)
+// ==========================================
+// RUTAS ADMINISTRADOR
+// ==========================================
+
+// Listar todos los pedidos
+app.get('/api/admin/pedidos', (req, res) => {
+    const sql = `
+        SELECT p.*, r.nombre as repartidor_nombre 
+        FROM pedidos p 
+        LEFT JOIN repartidores r ON p.repartidor_id = r.id 
+        ORDER BY p.id DESC
+    `;
+    pool.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: 'Error al obtener pedidos' });
+        res.json(results);
+    });
+});
+
+// Crear nuevo repartidor
+app.post('/api/admin/repartidores', (req, res) => {
+    const { nombre, email, password, vehiculo, placa, telefono } = req.body;
+
+    if (!nombre || !email || !password) {
+        return res.status(400).json({ error: 'Nombre, email y contraseña son obligatorios' });
+    }
+
+    const sql = `INSERT INTO repartidores (nombre, email, password, vehiculo, placa, telefono) VALUES (?, ?, ?, ?, ?, ?)`;
+    pool.query(sql, [nombre, email, password, vehiculo, placa, telefono], (err, results) => {
+        if (err) {
+            console.error('Error registrando repartidor:', err);
+            return res.status(500).json({ error: 'El email ya existe o hubo un error en la base de datos' });
+        }
+        res.status(201).json({ success: true, repartidor_id: results.insertId });
+    });
+});
+
+// Listar todos los repartidores
+app.get('/api/admin/repartidores', (req, res) => {
+    pool.query('SELECT id, nombre, email, vehiculo, placa, telefono, estado FROM repartidores ORDER BY id DESC', (err, results) => {
+        if (err) return res.status(500).json({ error: 'Error al consultar repartidores' });
+        res.json(results);
+    });
+});
+
+// Asignar pedido a un repartidor
+app.patch('/api/admin/pedidos/:id/asignar', (req, res) => {
+    const { id } = req.params;
+    const { repartidor_id } = req.body;
+
+    const sql = `UPDATE pedidos SET repartidor_id = ?, estado = 'En camino 🚚' WHERE id = ?`;
+    pool.query(sql, [repartidor_id, id], (err) => {
+        if (err) return res.status(500).json({ error: 'Error al asignar repartidor' });
+        res.json({ success: true, message: 'Repartidor asignado correctamente' });
+    });
+});
+
+// Actualizar estado general del pedido
 app.patch('/api/admin/pedidos/:id', (req, res) => {
     const { id } = req.params;
     const { estado } = req.body;
 
-    if (!estado) {
-        return res.status(400).json({ error: 'Debe especificar el nuevo estado' });
-    }
-
-    pool.query('UPDATE pedidos SET estado = ? WHERE id = ?', [estado, id], (err, results) => {
-        if (err) {
-            console.error('Error actualizando el estado:', err);
-            return res.status(500).json({ error: 'Error al actualizar el estado del pedido' });
-        }
+    pool.query('UPDATE pedidos SET estado = ? WHERE id = ?', [estado, id], (err) => {
+        if (err) return res.status(500).json({ error: 'Error al actualizar el estado' });
         res.json({ success: true, message: 'Estado actualizado correctamente' });
     });
 });
 
-// Captura global de errores no controlados para mantener el servidor vivo
-process.on('uncaughtException', (err) => {
-    console.error('⚠️ Excepción no capturada:', err.message);
+// ==========================================
+// RUTAS DASHBOARD REPARTIDOR
+// ==========================================
+
+// Login de Repartidor
+app.post('/api/repartidores/login', (req, res) => {
+    const { email, password } = req.body;
+
+    pool.query('SELECT id, nombre, email, vehiculo, placa, telefono FROM repartidores WHERE email = ? AND password = ?', [email, password], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Error en el servidor' });
+        if (results.length === 0) return res.status(401).json({ error: 'Credenciales incorrectas' });
+        res.json({ success: true, repartidor: results[0] });
+    });
 });
 
-process.on('unhandledRejection', (err) => {
-    console.error('⚠️ Promesa rechazada no capturada:', err);
+// Obtener pedidos asignados a un repartidor específico
+app.get('/api/repartidores/:id/pedidos', (req, res) => {
+    const { id } = req.params;
+    pool.query('SELECT * FROM pedidos WHERE repartidor_id = ? ORDER BY id DESC', [id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Error al consultar pedidos asignados' });
+        res.json(results);
+    });
 });
 
-// Declaración ÚNICA de puerto e inicio del servidor
+process.on('uncaughtException', (err) => console.error('⚠️ Excepción no capturada:', err.message));
+process.on('unhandledRejection', (err) => console.error('⚠️ Promesa rechazada no capturada:', err));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);

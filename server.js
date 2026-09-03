@@ -4,9 +4,11 @@ const mysql = require('mysql2');
 
 const app = express();
 
+// Habilitar CORS para recibir peticiones desde GitHub Pages
 app.use(cors());
 app.use(express.json());
 
+// Configuración del pool de conexión a MySQL con Variables de Entorno
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT || 3306,
@@ -16,9 +18,12 @@ const pool = mysql.createPool({
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
 
+// Probar conexión y crear la tabla "pedidos" automáticamente si no existe
 pool.getConnection((err, connection) => {
     if (err) {
         console.error('❌ Error de conexión a MySQL:', err.message);
@@ -53,10 +58,12 @@ pool.getConnection((err, connection) => {
     }
 });
 
+// Ruta raíz (Página de inicio del API)
 app.get('/', (req, res) => {
     res.json({ message: 'API de AMAZONAS funcionando correctamente 🚀' });
 });
 
+// Endpoint: Crear pedido (Cliente)
 app.post('/api/pedidos', (req, res) => {
     const { cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, propina, total } = req.body;
 
@@ -78,6 +85,7 @@ app.post('/api/pedidos', (req, res) => {
     });
 });
 
+// Endpoint: Listar todos los pedidos (Panel Admin)
 app.get('/api/admin/pedidos', (req, res) => {
     pool.query('SELECT * FROM pedidos ORDER BY id DESC', (err, results) => {
         if (err) {
@@ -88,6 +96,7 @@ app.get('/api/admin/pedidos', (req, res) => {
     });
 });
 
+// Endpoint: Obtener un pedido específico por ID (Rastrear pedido)
 app.get('/api/pedidos/:id', (req, res) => {
     const { id } = req.params;
     pool.query('SELECT * FROM pedidos WHERE id = ?', [id], (err, results) => {
@@ -102,6 +111,7 @@ app.get('/api/pedidos/:id', (req, res) => {
     });
 });
 
+// Endpoint: Actualizar el estado de un pedido (Panel Admin)
 app.patch('/api/admin/pedidos/:id', (req, res) => {
     const { id } = req.params;
     const { estado } = req.body;
@@ -119,6 +129,7 @@ app.patch('/api/admin/pedidos/:id', (req, res) => {
     });
 });
 
+// Captura global de errores no controlados para mantener el servidor vivo
 process.on('uncaughtException', (err) => {
     console.error('⚠️ Excepción no capturada:', err.message);
 });
@@ -127,6 +138,7 @@ process.on('unhandledRejection', (err) => {
     console.error('⚠️ Promesa rechazada no capturada:', err);
 });
 
+// Declaración ÚNICA de puerto e inicio del servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);

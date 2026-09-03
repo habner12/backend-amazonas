@@ -19,14 +19,14 @@ const pool = mysql.createPool({
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicialización de tablas MySQL
+// Inicialización segura de tablas y columnas
 pool.getConnection((err, connection) => {
     if (err) {
         console.error('❌ Error de conexión a MySQL:', err.message);
     } else {
         console.log('✅ Conexión exitosa a la base de datos MySQL');
 
-        // 1. Tabla de Repartidores
+        // 1. Crear tabla de Repartidores
         const createRepartidoresTable = `
             CREATE TABLE IF NOT EXISTS repartidores (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,7 +41,7 @@ pool.getConnection((err, connection) => {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `;
 
-        // 2. Tabla de Pedidos con relación a Repartidor
+        // 2. Crear tabla de Pedidos
         const createPedidosTable = `
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,17 +56,23 @@ pool.getConnection((err, connection) => {
                 total DECIMAL(10, 2) NOT NULL,
                 estado VARCHAR(50) DEFAULT 'Recibido ⏳',
                 repartidor_id INT NULL,
-                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (repartidor_id) REFERENCES repartidores(id) ON DELETE SET NULL
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `;
 
         connection.query(createRepartidoresTable, (err) => {
             if (err) console.error('Error creando tabla repartidores:', err.message);
+            
             connection.query(createPedidosTable, (err) => {
-                connection.release();
                 if (err) console.error('Error creando tabla pedidos:', err.message);
-                else console.log('✅ Tablas "repartidores" y "pedidos" listas');
+
+                // 3. Forzar adición de la columna repartidor_id si no existía previamente
+                const addColumnQuery = `ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS repartidor_id INT NULL;`;
+                connection.query(addColumnQuery, (err) => {
+                    connection.release();
+                    if (err) console.error('Error asegurando columna repartidor_id:', err.message);
+                    else console.log('✅ Base de datos verificada y estructurada correctamente');
+                });
             });
         });
     }
@@ -94,7 +100,17 @@ app.post('/api/pedidos', (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    pool.query(sql, [cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, propina || 0, total], (err, results) => {
+    pool.query(sql, [
+        cliente_nombre, 
+        cliente_telefono, 
+        direccion, 
+        latitud || '', 
+        longitud || '', 
+        horario_entrega || 'Inmediata', 
+        metodo_pago || 'Efectivo', 
+        propina || 0, 
+        total
+    ], (err, results) => {
         if (err) {
             console.error('Error insertando el pedido:', err);
             return res.status(500).json({ error: 'Error al registrar el pedido' });
@@ -106,7 +122,13 @@ app.post('/api/pedidos', (req, res) => {
 // Consultar estado de pedido por ID
 app.get('/api/pedidos/:id', (req, res) => {
     const { id } = req.params;
-    pool.query('SELECT p.*, r.nombre as repartidor_nombre, r.telefono as repartidor_telefono FROM pedidos p LEFT JOIN repartidores r ON p.repartidor_id = r.id WHERE p.id = ?', [id], (err, results) => {
+    const sql = `
+        SELECT p.*, COALESCE(r.nombre, 'Sin asignar') as repartidor_nombre, r.telefono as repartidor_telefono 
+        FROM pedidos p 
+        LEFT JOIN repartidores r ON p.repartidor_id = r.id 
+        WHERE p.id = ?
+    `;
+    pool.query(sql, [id], (err, results) => {
         if (err) return res.status(500).json({ error: 'Error al consultar pedido' });
         if (results.length === 0) return res.status(404).json({ error: 'Pedido no encontrado' });
         res.json(results[0]);
@@ -117,16 +139,28 @@ app.get('/api/pedidos/:id', (req, res) => {
 // RUTAS ADMINISTRADOR
 // ==========================================
 
-// Listar todos los pedidos
+// Listar todos los pedidos (Solución del error al cargar lista)
 app.get('/api/admin/pedidos', (req, res) => {
     const sql = `
-        SELECT p.*, r.nombre as repartidor_nombre 
+        SELECT 
+            p.id, 
+            p.cliente_nombre, 
+            p.cliente_telefono, 
+            p.direccion, 
+            p.metodo_pago, 
+            p.total, 
+            COALESCE(p.estado, 'Recibido ⏳') AS estado,
+            p.repartidor_id,
+            COALESCE(r.nombre, 'Sin asignar') AS repartidor_nombre
         FROM pedidos p 
         LEFT JOIN repartidores r ON p.repartidor_id = r.id 
         ORDER BY p.id DESC
     `;
     pool.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: 'Error al obtener pedidos' });
+        if (err) {
+            console.error('Error consultando pedidos:', err);
+            return res.status(500).json({ error: 'Error al obtener pedidos' });
+        }
         res.json(results);
     });
 });
@@ -140,7 +174,7 @@ app.post('/api/admin/repartidores', (req, res) => {
     }
 
     const sql = `INSERT INTO repartidores (nombre, email, password, vehiculo, placa, telefono) VALUES (?, ?, ?, ?, ?, ?)`;
-    pool.query(sql, [nombre, email, password, vehiculo, placa, telefono], (err, results) => {
+    pool.query(sql, [nombre, email, password, vehiculo || '', placa || '', telefono || ''], (err, results) => {
         if (err) {
             console.error('Error registrando repartidor:', err);
             return res.status(500).json({ error: 'El email ya existe o hubo un error en la base de datos' });

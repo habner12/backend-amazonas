@@ -19,13 +19,14 @@ const pool = mysql.createPool({
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicialización de tablas MySQL
+// Inicialización segura de tablas y columnas
 pool.getConnection((err, connection) => {
     if (err) {
         console.error('❌ Error de conexión a MySQL:', err.message);
     } else {
         console.log('✅ Conexión exitosa a la base de datos MySQL');
 
+        // 1. Crear tabla de Repartidores
         const createRepartidoresTable = `
             CREATE TABLE IF NOT EXISTS repartidores (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -40,6 +41,7 @@ pool.getConnection((err, connection) => {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `;
 
+        // 2. Crear tabla de Pedidos
         const createPedidosTable = `
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -50,6 +52,7 @@ pool.getConnection((err, connection) => {
                 longitud VARCHAR(50),
                 horario_entrega VARCHAR(50),
                 metodo_pago VARCHAR(50),
+                estado_pago VARCHAR(50) DEFAULT 'Pendiente ⏳',
                 propina DECIMAL(10, 2) DEFAULT 0,
                 total DECIMAL(10, 2) NOT NULL,
                 estado VARCHAR(50) DEFAULT 'Recibido ⏳',
@@ -60,13 +63,17 @@ pool.getConnection((err, connection) => {
 
         connection.query(createRepartidoresTable, (err) => {
             if (err) console.error('Error creando tabla repartidores:', err.message);
+            
             connection.query(createPedidosTable, (err) => {
                 if (err) console.error('Error creando tabla pedidos:', err.message);
-                
-                const addColumnQuery = `ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS repartidor_id INT NULL;`;
-                connection.query(addColumnQuery, (err) => {
-                    connection.release();
-                    console.log('✅ Base de datos lista y estructurada');
+
+                // Garantizar columnas faltantes si la tabla ya existía
+                connection.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS repartidor_id INT NULL;`, () => {
+                    connection.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS estado_pago VARCHAR(50) DEFAULT 'Pendiente ⏳';`, (err) => {
+                        connection.release();
+                        if (err) console.error('Error asegurando columnas:', err.message);
+                        else console.log('✅ Base de datos verificada y estructurada correctamente');
+                    });
                 });
             });
         });
@@ -90,9 +97,11 @@ app.post('/api/pedidos', (req, res) => {
         return res.status(400).json({ error: 'Faltan datos obligatorios para el pedido' });
     }
 
+    const estadoInicialPago = (metodo_pago === 'Efectivo') ? 'Efectivo 💵' : 'Pendiente QR ⏳';
+
     const sql = `
-        INSERT INTO pedidos (cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, propina, total)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO pedidos (cliente_nombre, cliente_telefono, direccion, latitud, longitud, horario_entrega, metodo_pago, estado_pago, propina, total)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     pool.query(sql, [
@@ -103,6 +112,7 @@ app.post('/api/pedidos', (req, res) => {
         longitud || '', 
         horario_entrega || 'Inmediata', 
         metodo_pago || 'Efectivo', 
+        estadoInicialPago,
         propina || 0, 
         total
     ], (err, results) => {
@@ -117,7 +127,13 @@ app.post('/api/pedidos', (req, res) => {
 // Consultar estado de pedido por ID
 app.get('/api/pedidos/:id', (req, res) => {
     const { id } = req.params;
-    pool.query('SELECT * FROM pedidos WHERE id = ?', [id], (err, results) => {
+    const sql = `
+        SELECT p.*, COALESCE(r.nombre, 'Sin asignar') as repartidor_nombre, r.telefono as repartidor_telefono 
+        FROM pedidos p 
+        LEFT JOIN repartidores r ON p.repartidor_id = r.id 
+        WHERE p.id = ?
+    `;
+    pool.query(sql, [id], (err, results) => {
         if (err) return res.status(500).json({ error: 'Error al consultar pedido' });
         if (results.length === 0) return res.status(404).json({ error: 'Pedido no encontrado' });
         res.json(results[0]);
@@ -128,7 +144,7 @@ app.get('/api/pedidos/:id', (req, res) => {
 // RUTAS ADMINISTRADOR
 // ==========================================
 
-// Listar todos los pedidos (Solución del error 500)
+// Listar todos los pedidos
 app.get('/api/admin/pedidos', (req, res) => {
     const sql = `SELECT * FROM pedidos ORDER BY id DESC`;
 
@@ -160,6 +176,46 @@ app.get('/api/admin/pedidos', (req, res) => {
     });
 });
 
+// Asignar pedido a un repartidor
+app.patch('/api/admin/pedidos/:id/asignar', (req, res) => {
+    const { id } = req.params;
+    const { repartidor_id } = req.body;
+
+    const repId = (repartidor_id === "" || repartidor_id === null) ? null : parseInt(repartidor_id);
+    const nuevoEstado = repId ? 'En camino 🚚' : 'Recibido ⏳';
+
+    const sql = `UPDATE pedidos SET repartidor_id = ?, estado = ? WHERE id = ?`;
+    pool.query(sql, [repId, nuevoEstado, id], (err) => {
+        if (err) {
+            console.error("Error al asignar repartidor:", err);
+            return res.status(500).json({ error: 'Error al asignar repartidor' });
+        }
+        res.json({ success: true, message: 'Repartidor actualizado correctamente' });
+    });
+});
+
+// Confirmar o cambiar estado de pago (QR / Efectivo)
+app.patch('/api/admin/pedidos/:id/pago', (req, res) => {
+    const { id } = req.params;
+    const { estado_pago } = req.body;
+
+    pool.query('UPDATE pedidos SET estado_pago = ? WHERE id = ?', [estado_pago, id], (err) => {
+        if (err) return res.status(500).json({ error: 'Error al actualizar el pago' });
+        res.json({ success: true, message: 'Estado de pago actualizado' });
+    });
+});
+
+// Actualizar estado del pedido
+app.patch('/api/admin/pedidos/:id/estado', (req, res) => {
+    const { id } = req.params;
+    const { estado } = req.body;
+
+    pool.query('UPDATE pedidos SET estado = ? WHERE id = ?', [estado, id], (err) => {
+        if (err) return res.status(500).json({ error: 'Error al actualizar el estado' });
+        res.json({ success: true, message: 'Estado actualizado correctamente' });
+    });
+});
+
 // Crear nuevo repartidor
 app.post('/api/admin/repartidores', (req, res) => {
     const { nombre, email, password, vehiculo, placa, telefono } = req.body;
@@ -183,29 +239,6 @@ app.get('/api/admin/repartidores', (req, res) => {
     pool.query('SELECT id, nombre, email, vehiculo, placa, telefono, estado FROM repartidores ORDER BY id DESC', (err, results) => {
         if (err) return res.status(500).json({ error: 'Error al consultar repartidores' });
         res.json(results);
-    });
-});
-
-// Asignar pedido a un repartidor
-app.patch('/api/admin/pedidos/:id/asignar', (req, res) => {
-    const { id } = req.params;
-    const { repartidor_id } = req.body;
-
-    const sql = `UPDATE pedidos SET repartidor_id = ?, estado = 'En camino 🚚' WHERE id = ?`;
-    pool.query(sql, [repartidor_id, id], (err) => {
-        if (err) return res.status(500).json({ error: 'Error al asignar repartidor' });
-        res.json({ success: true, message: 'Repartidor asignado correctamente' });
-    });
-});
-
-// Actualizar estado general del pedido
-app.patch('/api/admin/pedidos/:id', (req, res) => {
-    const { id } = req.params;
-    const { estado } = req.body;
-
-    pool.query('UPDATE pedidos SET estado = ? WHERE id = ?', [estado, id], (err) => {
-        if (err) return res.status(500).json({ error: 'Error al actualizar el estado' });
-        res.json({ success: true, message: 'Estado actualizado correctamente' });
     });
 });
 

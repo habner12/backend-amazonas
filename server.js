@@ -273,3 +273,56 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
 });
+
+// ==========================================
+// RUTAS Y ENDPOINTS PARA EL PANEL REPARTIDOR
+// ==========================================
+
+// 1. Endpoint para Autenticación/Login de Repartidores
+app.post('/api/repartidor/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ success: false, error: 'Correo y contraseña requeridos' });
+    }
+
+    try {
+        // Consulta a la tabla repartidores (ajusta si los campos de tu DB varían)
+        const [rows] = await db.query(
+            'SELECT id, nombre, email, vehiculo, placa, telefono FROM repartidores WHERE email = ? AND password = ?', 
+            [email, password]
+        );
+
+        if (rows && rows.length > 0) {
+            res.json({ 
+                success: true, 
+                repartidor: rows[0] 
+            });
+        } else {
+            res.status(401).json({ 
+                success: false, 
+                error: 'Correo o contraseña incorrectos' 
+            });
+        }
+    } catch (error) {
+        console.error('Error en /api/repartidor/login:', error);
+        res.status(500).json({ success: false, error: 'Error interno en la base de datos' });
+    }
+});
+
+// 2. Endpoint para obtener los pedidos asignados a un repartidor específico
+app.get('/api/repartidor/pedidos/:repartidorId', async (req, res) => {
+    const { repartidorId } = req.params;
+
+    try {
+        const [pedidos] = await db.query(
+            'SELECT * FROM pedidos WHERE repartidor_id = ? ORDER BY id DESC', 
+            [repartidorId]
+        );
+
+        res.json(pedidos);
+    } catch (error) {
+        console.error('Error en /api/repartidor/pedidos:', error);
+        res.status(500).json({ success: false, error: 'Error al obtener los pedidos asignados' });
+    }
+});

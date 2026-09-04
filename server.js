@@ -6,6 +6,8 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
@@ -83,6 +85,7 @@ pool.getConnection((err, connection) => {
                 total DECIMAL(10, 2) NOT NULL,
                 estado VARCHAR(50) DEFAULT 'Recibido ⏳',
                 repartidor_id INT NULL,
+                foto_entrega LONGTEXT NULL,
                 fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `;
@@ -98,9 +101,13 @@ pool.getConnection((err, connection) => {
                     if (err) console.error('Error verificando columna repartidor_id:', err.message);
 
                     agregarColumnaSiNoExiste(connection, 'pedidos', 'estado_pago', "VARCHAR(50) DEFAULT 'Pendiente ⏳'", (err) => {
-                        connection.release();
                         if (err) console.error('Error verificando columna estado_pago:', err.message);
-                        else console.log('✅ Base de datos verificada y estructurada correctamente');
+
+                        agregarColumnaSiNoExiste(connection, 'pedidos', 'foto_entrega', "LONGTEXT NULL", (err) => {
+                            connection.release();
+                            if (err) console.error('Error verificando columna foto_entrega:', err.message);
+                            else console.log('✅ Base de datos verificada y estructurada correctamente');
+                        });
                     });
                 });
             });
@@ -274,7 +281,7 @@ app.get('/api/admin/repartidores', (req, res) => {
 // RUTAS DASHBOARD REPARTIDOR
 // ==========================================
 
-// Login de Repartidor (soporta llamadas a /api/repartidores/login y /api/repartidor/login)
+// Login de Repartidor
 const handleRepartidorLogin = (req, res) => {
     const { email, password } = req.body;
 
@@ -300,6 +307,26 @@ const handleRepartidorLogin = (req, res) => {
 
 app.post('/api/repartidores/login', handleRepartidorLogin);
 app.post('/api/repartidor/login', handleRepartidorLogin);
+
+// Ruta para subir foto de entrega del pedido (Corregido a MySQL)
+app.patch('/api/repartidores/pedidos/:id/entrega-foto', (req, res) => {
+    const { id } = req.params;
+    const { foto } = req.body;
+
+    if (!foto) {
+        return res.status(400).json({ error: 'La foto es obligatoria' });
+    }
+
+    const sql = `UPDATE pedidos SET estado = 'Entregado ✅', foto_entrega = ? WHERE id = ?`;
+    
+    pool.query(sql, [foto, id], (err, results) => {
+        if (err) {
+            console.error("Error al guardar foto de entrega:", err);
+            return res.status(500).json({ error: 'Error al actualizar pedido' });
+        }
+        res.json({ success: true, message: 'Entrega confirmada con foto registrada' });
+    });
+});
 
 // Obtener pedidos asignados a un repartidor específico
 const handleObtenerPedidosRepartidor = (req, res) => {

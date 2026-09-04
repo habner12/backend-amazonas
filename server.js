@@ -19,6 +19,32 @@ const pool = mysql.createPool({
     ssl: { rejectUnauthorized: false }
 });
 
+// Función auxiliar para agregar columnas sin error de sintaxis en MySQL
+function agregarColumnaSiNoExiste(connection, tabla, columna, definicion, callback) {
+    const checkSql = `
+        SELECT COUNT(*) AS count 
+        FROM information_schema.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = ? 
+          AND COLUMN_NAME = ?
+    `;
+    
+    connection.query(checkSql, [tabla, columna], (err, results) => {
+        if (err) return callback(err);
+
+        if (results[0].count === 0) {
+            const alterSql = `ALTER TABLE ${tabla} ADD COLUMN ${columna} ${definicion}`;
+            connection.query(alterSql, (alterErr) => {
+                if (alterErr) return callback(alterErr);
+                console.log(`✅ Columna '${columna}' agregada a la tabla '${tabla}'.`);
+                callback(null);
+            });
+        } else {
+            callback(null);
+        }
+    });
+}
+
 // Inicialización segura de tablas y columnas
 pool.getConnection((err, connection) => {
     if (err) {
@@ -67,11 +93,13 @@ pool.getConnection((err, connection) => {
             connection.query(createPedidosTable, (err) => {
                 if (err) console.error('Error creando tabla pedidos:', err.message);
 
-                // Garantizar columnas faltantes si la tabla ya existía
-                connection.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS repartidor_id INT NULL;`, () => {
-                    connection.query(`ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS estado_pago VARCHAR(50) DEFAULT 'Pendiente ⏳';`, (err) => {
+                // Verificación y adición segura de columnas sin errores de SQL
+                agregarColumnaSiNoExiste(connection, 'pedidos', 'repartidor_id', 'INT NULL', (err) => {
+                    if (err) console.error('Error verificando columna repartidor_id:', err.message);
+
+                    agregarColumnaSiNoExiste(connection, 'pedidos', 'estado_pago', "VARCHAR(50) DEFAULT 'Pendiente ⏳'", (err) => {
                         connection.release();
-                        if (err) console.error('Error asegurando columnas:', err.message);
+                        if (err) console.error('Error verificando columna estado_pago:', err.message);
                         else console.log('✅ Base de datos verificada y estructurada correctamente');
                     });
                 });
@@ -246,83 +274,54 @@ app.get('/api/admin/repartidores', (req, res) => {
 // RUTAS DASHBOARD REPARTIDOR
 // ==========================================
 
-// Login de Repartidor
-app.post('/api/repartidores/login', (req, res) => {
-    const { email, password } = req.body;
-
-    pool.query('SELECT id, nombre, email, vehiculo, placa, telefono FROM repartidores WHERE email = ? AND password = ?', [email, password], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Error en el servidor' });
-        if (results.length === 0) return res.status(401).json({ error: 'Credenciales incorrectas' });
-        res.json({ success: true, repartidor: results[0] });
-    });
-});
-
-// Obtener pedidos asignados a un repartidor específico
-app.get('/api/repartidores/:id/pedidos', (req, res) => {
-    const { id } = req.params;
-    pool.query('SELECT * FROM pedidos WHERE repartidor_id = ? ORDER BY id DESC', [id], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Error al consultar pedidos asignados' });
-        res.json(results);
-    });
-});
-
-process.on('uncaughtException', (err) => console.error('⚠️ Excepción no capturada:', err.message));
-process.on('unhandledRejection', (err) => console.error('⚠️ Promesa rechazada no capturada:', err));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
-});
-
-// ==========================================
-// RUTAS Y ENDPOINTS PARA EL PANEL REPARTIDOR
-// ==========================================
-
-// 1. Endpoint para Autenticación/Login de Repartidores
-app.post('/api/repartidor/login', async (req, res) => {
+// Login de Repartidor (soporta llamadas a /api/repartidores/login y /api/repartidor/login)
+const handleRepartidorLogin = (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
         return res.status(400).json({ success: false, error: 'Correo y contraseña requeridos' });
     }
 
-    try {
-        // Consulta a la tabla repartidores (ajusta si los campos de tu DB varían)
-        const [rows] = await db.query(
-            'SELECT id, nombre, email, vehiculo, placa, telefono FROM repartidores WHERE email = ? AND password = ?', 
-            [email, password]
-        );
-
-        if (rows && rows.length > 0) {
-            res.json({ 
-                success: true, 
-                repartidor: rows[0] 
-            });
-        } else {
-            res.status(401).json({ 
-                success: false, 
-                error: 'Correo o contraseña incorrectos' 
-            });
+    pool.query(
+        'SELECT id, nombre, email, vehiculo, placa, telefono FROM repartidores WHERE email = ? AND password = ?',
+        [email, password],
+        (err, results) => {
+            if (err) {
+                console.error('Error en login de repartidor:', err);
+                return res.status(500).json({ success: false, error: 'Error en el servidor' });
+            }
+            if (results.length === 0) {
+                return res.status(401).json({ success: false, error: 'Correo o contraseña incorrectos' });
+            }
+            res.json({ success: true, repartidor: results[0] });
         }
-    } catch (error) {
-        console.error('Error en /api/repartidor/login:', error);
-        res.status(500).json({ success: false, error: 'Error interno en la base de datos' });
-    }
-});
+    );
+};
 
-// 2. Endpoint para obtener los pedidos asignados a un repartidor específico
-app.get('/api/repartidor/pedidos/:repartidorId', async (req, res) => {
-    const { repartidorId } = req.params;
+app.post('/api/repartidores/login', handleRepartidorLogin);
+app.post('/api/repartidor/login', handleRepartidorLogin);
 
-    try {
-        const [pedidos] = await db.query(
-            'SELECT * FROM pedidos WHERE repartidor_id = ? ORDER BY id DESC', 
-            [repartidorId]
-        );
+// Obtener pedidos asignados a un repartidor específico
+const handleObtenerPedidosRepartidor = (req, res) => {
+    const repartidorId = req.params.id || req.params.repartidorId;
 
-        res.json(pedidos);
-    } catch (error) {
-        console.error('Error en /api/repartidor/pedidos:', error);
-        res.status(500).json({ success: false, error: 'Error al obtener los pedidos asignados' });
-    }
+    pool.query('SELECT * FROM pedidos WHERE repartidor_id = ? ORDER BY id DESC', [repartidorId], (err, results) => {
+        if (err) {
+            console.error('Error al obtener pedidos del repartidor:', err);
+            return res.status(500).json({ success: false, error: 'Error al consultar pedidos asignados' });
+        }
+        res.json(results);
+    });
+};
+
+app.get('/api/repartidores/:id/pedidos', handleObtenerPedidosRepartidor);
+app.get('/api/repartidor/pedidos/:repartidorId', handleObtenerPedidosRepartidor);
+
+// Manejo global de errores descontrolados
+process.on('uncaughtException', (err) => console.error('⚠️ Excepción no capturada:', err.message));
+process.on('unhandledRejection', (err) => console.error('⚠️ Promesa rechazada no capturada:', err));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
 });
